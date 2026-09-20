@@ -1,7 +1,7 @@
 {
   "name": "@internetisalie/opencode-plugin-simple-memory",
   "module": "server.ts",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Durable global and project memory tools for OpenCode",
   "author": "internetisalie",
   "repository": {
@@ -39,7 +39,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "engines": {
-    "opencode": "1.18.31-internetisalie.2"
+    "opencode": "1.18.31"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.18.31"

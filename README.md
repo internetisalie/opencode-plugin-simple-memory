@@ -13,7 +13,7 @@ This package is published through GitHub Packages. Configure the `@internetisali
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
-The plugin targets the custom OpenCode host version `1.18.31-internetisalie.2` exactly.
+The plugin targets the custom OpenCode host version `1.18.31-internetisalie.2` exactly. That build advertises `1.18.31` as its package compatibility version, which is the value declared in `engines.opencode`.
 
 Custom OpenCode V1 hosts load the root entrypoint:
 
