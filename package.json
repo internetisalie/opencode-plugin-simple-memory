@@ -4,7 +4,10 @@
   "version": "1.2.0",
   "description": "Durable global and project memory tools for OpenCode",
   "author": "internetisalie",
-  "repository": "https://github.com/internetisalie/opencode-plugin-simple-memory",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/internetisalie/opencode-plugin-simple-memory.git"
+  },
   "homepage": "https://github.com/internetisalie/opencode-plugin-simple-memory#readme",
   "bugs": "https://github.com/internetisalie/opencode-plugin-simple-memory/issues",
   "keywords": [
