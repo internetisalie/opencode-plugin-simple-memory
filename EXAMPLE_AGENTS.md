@@ -10,7 +10,7 @@ This is an example `AGENTS.md` file showing how to configure agent guidelines fo
 
 **One line, detailed** - Keep each memory on a single line to avoid git conflicts. Be detailed but concise. Include file references where applicable (e.g., "See: path/to/file.py").
 
-- Relevant memories are injected automatically by the plugin before responses
+- A compact memory index (ID, title, type, and storage scope) is injected automatically; use `memory_read()` for a full body
 - Explicit "remember ..." requests are saved automatically by the plugin
 - Use `memory_recall()` manually when you need a broader memory search
 - **NEVER** use `memory_remember()` automatically for arbitrary conversation content

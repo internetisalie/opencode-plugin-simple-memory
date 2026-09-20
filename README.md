@@ -1,149 +1,142 @@
 # Simple Memory Plugin for OpenCode
 
-[![npm version](https://img.shields.io/npm/v/@knikolov/opencode-plugin-simple-memory)](https://www.npmjs.com/package/@knikolov/opencode-plugin-simple-memory)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+A durable memory plugin for [OpenCode](https://opencode.ai) with separate global and project stores, stable record IDs, agent tools, and an authenticated-host HTTP interface.
 
-A persistent memory plugin for [OpenCode](https://opencode.ai) that enables the AI assistant to remember context across sessions.
+This repository is the `internetisalie/opencode-plugin-simple-memory` fork. Its package is published as `@internetisalie/opencode-plugin-simple-memory`.
 
 ## Setup
 
-1. Add the plugin to your [OpenCode config](https://opencode.ai/docs/config/):
+This package is published through GitHub Packages. Configure the `@internetisalie` scope and authenticate with a token that can read packages:
 
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["@knikolov/opencode-plugin-simple-memory"]
-   }
-   ```
-
-2. Start using memory commands in your conversations.
-
-Memories are stored in `.opencode/memory/` as daily logfmt files. Existing logfmt files remain readable across plugin updates.
-
-Automatic memory loading and saving are opt-in. When enabled, the plugin can load and save context automatically:
-
-- Before a response, it injects a short relevant-memory block based on the latest user message.
-- When the user explicitly says “remember ...”, it saves that memory automatically.
-- It does not automatically save arbitrary conversation content.
-
-## Updating
-
-> [!WARNING]
-> OpenCode does NOT auto-update plugins.
-
-To get the latest version, clear the cached plugin and let OpenCode reinstall it:
-
-```bash
-# Remove the plugin from cache
-rm -rf ~/.cache/opencode/node_modules/@knikolov/opencode-plugin-simple-memory
-
-# Run OpenCode to trigger reinstall
-opencode
+```ini
+@internetisalie:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
+
+The plugin targets the custom OpenCode host version `1.18.31-internetisalie.2` exactly.
+
+Custom OpenCode V1 hosts load the root entrypoint:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@internetisalie/opencode-plugin-simple-memory"]
+}
+```
+
+The module has the stable ID `opencode-simple-memory`. The legacy callable plugin remains available only for direct imports by code that invokes the older function interface:
+
+```ts
+import MemoryPlugin from "@internetisalie/opencode-plugin-simple-memory/legacy"
+```
+
+Do not put the `/legacy` subpath in OpenCode's plugin configuration; the custom host requires the root V1 module export.
+
+## Storage
+
+- Project memories: `<input.directory>/.opencode/memory/*.logfmt`
+- Global memories: `~/.config/opencode/simple-memory/*.logfmt`
+
+Project storage is always derived from the directory captured when the plugin instance starts. Neither the HTTP API nor a tool accepts a project filesystem path.
+
+Each full record contains:
+
+```json
+{
+  "id": "mem_2d82f71e-9bd8-45ed-a494-889b97e3063d",
+  "title": "Use Redis for sessions",
+  "type": "decision",
+  "scope": "project",
+  "topic": "general",
+  "content": "Use Redis for session storage.",
+  "createdAt": "2026-09-20T12:00:00.000Z",
+  "updatedAt": "2026-09-20T12:00:00.000Z"
+}
+```
+
+`scope` is the storage scope (`global` or `project`). `topic` preserves the older free-form `scope` concept used by legacy tools and logfmt records.
 
 ## Tools
 
-The plugin provides nine tools:
+Tools remain agent-only. In particular, the HTTP API has no create endpoint.
 
 | Tool | Description |
 |------|-------------|
-| `memory_remember` | Store a new memory |
-| `memory_recall` | Retrieve memories by scope, type, or search query |
-| `memory_update` | Update an existing memory |
-| `memory_forget` | Delete a memory (with audit logging) |
-| `memory_list` | List all scopes and types for discovery |
-| `memory_export` | Export memories as `jsonl`, `json`, or `logfmt` |
-| `memory_import` | Import memories from `jsonl`, `json`, or compatible `logfmt` |
-| `memory_compact` | Rewrite memory files chronologically and remove exact duplicates |
-| `memory_context` | Build a compact relevant-memory context pack |
+| `memory_write` | Create a titled memory in `global` or `project` storage |
+| `memory_read` | Read one full record by stable ID, optionally restricted to a storage scope |
+| `memory_remember` | Legacy-compatible create call using free-form topic `scope`; defaults to project storage |
+| `memory_recall` | Retrieve full project records with legacy topic, type, date, tag, and query filters |
+| `memory_update` | Update by stable ID or legacy topic/type selection |
+| `memory_forget` | Delete by stable ID across stores or by legacy topic/type selection |
+| `memory_list` | List compact `id`, title, type, and storage-scope indexes across both stores |
+| `memory_export` | Export one store as `jsonl`, `json`, or logfmt |
+| `memory_import` | Import compatible data into one store |
+| `memory_compact` | Remove exact duplicates and rewrite one store chronologically |
+| `memory_context` | Explicitly build a compact full-body context pack |
 
-## Memory Types
+Legacy calls continue to work:
 
-- `decision` - Architectural or design decisions
-- `learning` - Things learned during development
-- `preference` - User or project preferences
-- `blocker` - Current blockers or issues
-- `context` - General context information
-- `pattern` - Recurring patterns or conventions
-
-## Example Usage
-
-```
-User: Remember that my name is Kris
-
-AI: [calls memory_remember with type="context", scope="user", 
-     content="User's name is Kris"]
-    
-    I've stored that your name is Kris.
-
-User: My preferred programming language is Erlang
-
-AI: [calls memory_remember with type="preference", scope="user", 
-     content="Preferred programming language is Erlang"]
-    
-    Got it! I've noted that your preferred programming language is Erlang.
-
-User: What do you know about me?
-
-AI: [calls memory_recall with scope="user"]
-    
-    Here's what I know about you:
-    - Your name is Kris
-    - Your preferred programming language is Erlang
-
-User: Actually, I prefer Elixir now.
-
-AI: [calls memory_update with type="preference", scope="user", 
-     content="Preferred programming language is Elixir"]
-    
-    Updated your language preference to Elixir.
-
-User: Forget my language preference
-
-AI: [calls memory_forget with type="preference", scope="user", 
-     reason="User requested removal"]
-    
-    Done. I've removed your language preference from memory.
+```text
+memory_remember(type="decision", scope="auth", content="Use passkeys")
+memory_recall(scope="auth", match="exact")
+memory_forget(type="decision", scope="auth", reason="Superseded")
 ```
 
-## Recall Filters
+The durable interface uses stable IDs and storage scopes:
 
-`memory_recall` supports the original filters plus optional richer filters:
+```text
+memory_write(scope="global", title="Preferred diffs", type="preference", content="Keep diffs minimal")
+memory_read(id="mem_...", scope="global")
+memory_forget(id="mem_...", storageScope="global", reason="No longer applies")
+```
 
-- `scope` - filter by scope. By default this keeps the original contains-style matching.
-- `type` - filter by memory type.
-- `query` - rank by matching words across type, scope, content, and tags.
-- `limit` - maximum results. Query results return the best matches; non-query results return the latest memories.
-- `tags` - require all provided tags.
-- `since` / `until` - filter by ISO timestamp or date prefix.
-- `match` - scope matching mode: `contains`, `exact`, or `prefix`.
+Memory types are `decision`, `learning`, `preference`, `blocker`, `context`, and `pattern`.
+
+## HTTP API
+
+The custom OpenCode host authenticates and strips the plugin route prefix before calling `http.fetch`. The handler still validates every method, path, query, ID, and body itself. All responses are JSON with `content-type: application/json`.
+
+### List And Search
+
+```http
+GET /memories?scope=global|project&q=optional
+```
+
+Returns `{ "memories": [...] }` containing full records. `scope` is required. `q` searches ID, title, type, topic, content, and tags.
+
+### Update
+
+```http
+PATCH /memories/:id
+Content-Type: application/json
+
+{"scope":"project","title":"New title","type":"decision","content":"New body"}
+```
+
+`scope` is required and identifies the store. At least one of `title`, `type`, or `content` is required. Unknown fields, invalid types, empty values, and bodies over 64 KiB are rejected. The stable ID and creation timestamp do not change.
+
+The custom SDK may forward the same JSON body as `text/plain`; the handler accepts both content types. A forwarded `directory` query parameter is ignored, and cannot override the project directory captured by the plugin instance. Successful updates return `{ "memory": { ... } }`.
+
+### Delete
+
+```http
+DELETE /memories/:id?scope=global|project
+```
+
+Returns `{ "success": true, "id": "...", "scope": "..." }`. Updates and deletions append audit records to that store's `deletions.logfmt`.
+
+Unknown routes return `404`; unsupported methods on known routes return `405` with an `Allow` header.
 
 ## Automatic Context
 
-Automatic context loading is disabled by default. When `autoLoad` is enabled, the plugin uses OpenCode chat hooks to remember the latest user message, search active memories, and inject a compact block like this into system context:
-
-```md
-Relevant Memory:
-- context/deploy/staging: Use materialize-deployments.cjs for staging runtime restart
-- context/tests: Run make staging-live-onboarding-e2e for staging onboarding
-```
-
-Automatic context saving is also disabled by default. When `autoSave` is enabled, it is intentionally conservative and only stores explicit requests such as:
-
-```text
-remember that I prefer minimal diffs
-```
-
-That request is stored as a `preference` memory in scope `user` with tag `auto`. Other explicit remember requests default to `context/user` unless they look like a decision, blocker, pattern, or preference.
-
-Configure the behavior through plugin options by using OpenCode's plugin tuple form. The first item is the package name and the second item is the options object passed to the plugin:
+Automatic loading and saving are disabled by default. Enable them with the existing tuple configuration:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "@knikolov/opencode-plugin-simple-memory",
+      "@internetisalie/opencode-plugin-simple-memory",
       {
         "autoLoad": true,
         "autoSave": true,
@@ -158,103 +151,43 @@ Configure the behavior through plugin options by using OpenCode's plugin tuple f
 }
 ```
 
-Configuration options:
+When `autoLoad` is enabled, the system hook searches both stores but injects only an index:
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `autoLoad` | `false` | Enables automatic relevant-memory injection before responses. The plugin uses the latest user message as the search query and appends a compact `Relevant Memory:` block to system context when matches exist. |
-| `autoSave` | `false` | Enables automatic saving only for explicit user requests like `remember that I prefer minimal diffs`. It does not save arbitrary conversation content. |
-| `autoHookTimeoutMs` | `100` | Maximum time each automatic hook can spend on memory work. Hooks fail open after this timeout so memory loading or saving cannot block normal responses. |
-| `contextLimit` | `5` | Maximum number of memories included in the automatic relevant-memory block. |
-| `contextMaxChars` | `1200` | Maximum character budget for the automatic relevant-memory block. Matching memories are truncated to stay within this budget. |
-| `contextMinScore` | `1` when there is a query | Minimum relevance score required for automatic context loading. Increase this to make injected memory stricter; set it lower to include weaker matches. |
-| `autoSaveScope` | `"user"` | Scope used for automatic explicit `remember ...` saves unless the inferred memory itself provides something more specific. |
-
-To keep automatic behavior disabled while retaining manual tools, omit options entirely or set both flags to `false`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "@knikolov/opencode-plugin-simple-memory",
-      {
-        "autoLoad": false,
-        "autoSave": false
-      }
-    ]
-  ]
-}
+```text
+Relevant Memory Index:
+- id=mem_... title="Staging restart" type=pattern scope=project
 ```
 
-For local development, point OpenCode at the checkout with a `file://` URL and pass the same options:
+Memory bodies are never inserted automatically. The agent must explicitly use `memory_read`, `memory_recall`, `memory_context`, or the HTTP GET endpoint to retrieve them.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "file:///absolute/path/to/opencode-plugin-simple-memory/index.ts",
-      {
-        "autoLoad": true,
-        "autoSave": true
-      }
-    ]
-  ]
-}
-```
+When `autoSave` is enabled, only explicit requests such as `remember that I prefer minimal diffs` are stored. Auto-saved records use the complete durable model, default to project storage, and keep the configured legacy topic (default `user`).
 
-OpenCode loads plugin configuration at startup. Restart OpenCode after changing configuration.
+## Logfmt Compatibility
 
-## Storage Format
-
-Memory files are daily logfmt files named `YYYY-MM-DD.logfmt` under `.opencode/memory/`.
-
-Each active memory record uses these fields:
+New records extend the existing one-record-per-line format:
 
 ```logfmt
-ts=2026-05-28T10:00:00.000Z type=context scope=api content="Remember this" issue=#51 tags=backend,current
+id=mem_... title="Use Redis" created_at=2026-09-20T12:00:00.000Z updated_at=2026-09-20T12:00:00.000Z ts=2026-09-20T12:00:00.000Z type=decision scope=auth content="Use Redis for sessions"
 ```
 
-Compatibility notes:
+Compatibility behavior:
 
-- Existing unquoted `scope`, `issue`, and `tags` records remain readable.
-- New records quote fields only when needed, except `content`, which is always quoted.
-- Multiline content is stored on one physical line using escaped `\n` sequences and is restored during recall/export.
-- Updates and deletes append audit records to `.opencode/memory/deletions.logfmt`.
-
-## Maintenance
-
-`memory_forget` keeps its original behavior when called with only `scope`, `type`, and `reason`: it deletes all exact matches. To delete only one matching memory, pass `query`.
-
-`memory_export` and `memory_import` can move memories between projects or back up the store. `jsonl` is the default export/import format.
-
-`memory_compact` removes exact duplicate active records and rewrites active memory files in chronological order. Use `dryRun: true` to preview the change.
+- Existing `ts`, `type`, `scope`, and `content` records remain readable.
+- Older `date` and `text` records remain readable.
+- Legacy records receive deterministic location-derived IDs, content-derived titles, default type `context` when absent, and timestamps without requiring a rewrite. Exact duplicate lines remain independently addressable.
+- Existing multiline escaping and raw-backslash behavior remain supported.
+- New writes retain `ts`, `type`, `scope`, and `content` fields for older logfmt readers.
+- Imports accept real `YYYY-MM-DD` dates and ISO-like timestamps only; invalid timestamps are skipped before a filename is derived.
+- `action=deleted` audit lines are never imported as active memories.
+- In-process reads and mutations are serialized per canonical store directory, including across plugin instances sharing global storage.
+- No startup migration or destructive rewrite is performed.
 
 ## Local Development
 
-Clone the repository and install dependencies:
-
 ```bash
-git clone https://github.com/cnicolov/opencode-plugin-simple-memory.git
-cd opencode-plugin-simple-memory
 bun install
-```
-
-Run checks:
-
-```bash
 bun test
 bun run typecheck
 ```
 
-Point your OpenCode config to the local checkout via a `file://` URL:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///absolute/path/to/opencode-plugin-simple-memory"]
-}
-```
-
-Replace `/absolute/path/to/opencode-plugin-simple-memory` with your actual path.
+There is no separate build step; the package publishes its TypeScript entrypoints directly.

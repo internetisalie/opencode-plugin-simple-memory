@@ -1,35 +1,33 @@
+/// <reference path="./plugin-http.d.ts" />
+
 import { type Plugin, tool } from "@opencode-ai/plugin"
-import { appendFile, mkdir, rename } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join } from "node:path"
+import { createFetchHandler } from "./http"
+import {
+  MEMORY_TYPES,
+  STORAGE_SCOPES,
+  compactStore,
+  createStores,
+  dateFromTimestamp,
+  deleteSelectedEntries,
+  encodeMemory,
+  isMemoryType,
+  isStorageScope,
+  newMemory,
+  parseMemoryLine,
+  readEntries,
+  toRecord,
+  updateSelectedEntry,
+  type Memory,
+  type MemoryEntry,
+  type MemoryStores,
+  type MemoryType,
+  type StorageScope,
+} from "./memory"
 
-const MEMORY_TYPES = ["decision", "learning", "preference", "blocker", "context", "pattern"] as const
-
-type MemoryType = typeof MEMORY_TYPES[number]
-
-interface Memory {
-  ts: string
-  type: MemoryType
-  scope: string
-  content: string
-  issue?: string
-  tags?: string[]
-}
-
-interface MemoryEntry {
-  memory: Memory
-  filepath: string
-  lineIndex: number
-}
-
-interface MemoryStore {
-  dir: string
-  ensureDir(): Promise<void>
-  appendMemory(memory: Memory): Promise<void>
-  appendDeletion(memory: Memory, reason: string): Promise<void>
-  readEntries(): Promise<MemoryEntry[]>
-  readDeletionLines(): Promise<string[]>
-  rewriteFile(filepath: string, lines: string[]): Promise<void>
-}
+export type { MemoryRecord, MemoryType, StorageScope } from "./memory"
+export { MEMORY_TYPES, STORAGE_SCOPES, parseMemoryLine } from "./memory"
 
 interface PluginOptions {
   autoLoad?: boolean
@@ -51,150 +49,6 @@ interface ContextOptions {
   minScore?: number
 }
 
-const isMemoryType = (value: string): value is MemoryType => MEMORY_TYPES.includes(value as MemoryType)
-
-const dateFromTs = (ts: string) => ts.split("T")[0] || new Date().toISOString().split("T")[0]!
-
-const escapeValue = (value: string) => value
-  .replace(/\\/g, "\\\\")
-  .replace(/\n/g, "\\n")
-  .replace(/\r/g, "\\r")
-  .replace(/"/g, '\\"')
-
-const unescapeValue = (value: string) => {
-  let result = ""
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i]
-    if (char !== "\\") {
-      result += char
-      continue
-    }
-
-    const next = value[++i]
-    if (next === "n") result += "\n"
-    else if (next === "r") result += "\r"
-    else if (next === '"') result += '"'
-    else if (next === "\\") result += "\\"
-    else if (next !== undefined) result += `\\${next}`
-  }
-  return result
-}
-
-const needsQuotes = (value: string) => value === "" || /\s|"|\\/.test(value)
-
-const field = (key: string, value: string, alwaysQuote = false) => {
-  if (!alwaysQuote && !needsQuotes(value)) return `${key}=${value}`
-  return `${key}="${escapeValue(value)}"`
-}
-
-const parseFields = (line: string): Record<string, string> => {
-  const fields: Record<string, string> = {}
-  let index = 0
-
-  while (index < line.length) {
-    while (line[index] === " ") index++
-
-    const keyStart = index
-    while (index < line.length && line[index] !== "=" && line[index] !== " ") index++
-    const key = line.slice(keyStart, index)
-    if (!key || line[index] !== "=") break
-    index++
-
-    if (line[index] === '"') {
-      index++
-      let value = ""
-      while (index < line.length) {
-        const char = line[index]
-        if (char === '"') {
-          index++
-          break
-        }
-        if (char === "\\" && index + 1 < line.length) {
-          value += char + line[index + 1]
-          index += 2
-          continue
-        }
-        value += char
-        index++
-      }
-      fields[key] = unescapeValue(value)
-      continue
-    }
-
-    const valueStart = index
-    while (index < line.length && line[index] !== " ") index++
-    fields[key] = line.slice(valueStart, index)
-  }
-
-  return fields
-}
-
-const parseLine = (line: string): Memory | null => {
-  const fields = parseFields(line)
-  const { ts, type, scope } = fields
-
-  if (!ts || !type || !scope || !isMemoryType(type)) return null
-
-  return {
-    ts,
-    type,
-    scope,
-    content: fields.content || "",
-    issue: fields.issue,
-    tags: fields.tags ? fields.tags.split(",").filter(Boolean) : undefined,
-  }
-}
-
-const encodeMemory = (memory: Memory): string => {
-  const parts = [
-    field("ts", memory.ts),
-    field("type", memory.type),
-    field("scope", memory.scope),
-    field("content", memory.content, true),
-  ]
-
-  if (memory.issue) parts.push(field("issue", memory.issue))
-  if (memory.tags?.length) parts.push(field("tags", memory.tags.join(",")))
-
-  return parts.join(" ")
-}
-
-const encodeDeletion = (memory: Memory, reason: string): string => {
-  const parts = [
-    field("ts", new Date().toISOString()),
-    field("action", "deleted"),
-    field("original_ts", memory.ts),
-    field("type", memory.type),
-    field("scope", memory.scope),
-    field("content", memory.content, true),
-    field("reason", reason, true),
-  ]
-
-  if (memory.issue) parts.push(field("issue", memory.issue))
-  if (memory.tags?.length) parts.push(field("tags", memory.tags.join(",")))
-
-  return parts.join(" ")
-}
-
-const formatMemory = (memory: Memory): string => {
-  const date = dateFromTs(memory.ts)
-  const tags = memory.tags?.length ? ` [${memory.tags.join(", ")}]` : ""
-  const issue = memory.issue ? ` (${memory.issue})` : ""
-  return `[${date}] ${memory.type}/${memory.scope}: ${memory.content}${issue}${tags}`
-}
-
-const scoreMatch = (memory: Memory, words: string[]): number => {
-  const searchable = `${memory.type} ${memory.scope} ${memory.content} ${memory.tags?.join(" ") || ""}`.toLowerCase()
-  let score = 0
-  for (const word of words) {
-    if (searchable.includes(word)) score++
-    if (memory.scope.toLowerCase() === word) score += 2
-    if (memory.type.toLowerCase() === word) score += 2
-    if (memory.tags?.some((tag) => tag.toLowerCase() === word)) score += 2
-  }
-  return score
-}
-
 const typePriority: Record<MemoryType, number> = {
   preference: 6,
   decision: 5,
@@ -204,57 +58,126 @@ const typePriority: Record<MemoryType, number> = {
   learning: 1,
 }
 
-const truncate = (value: string, maxLength: number) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  if (normalized.length <= maxLength) return normalized
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+export const defaultGlobalMemoryDirectory = (home = homedir()) => join(home, ".config", "opencode", "simple-memory")
+
+const formatMemory = (entry: MemoryEntry): string => {
+  const memory = entry.memory
+  const tags = memory.tags?.length ? ` [${memory.tags.join(", ")}]` : ""
+  const issue = memory.issue ? ` (${memory.issue})` : ""
+  return `[${dateFromTimestamp(memory.createdAt)}] ${memory.type}/${memory.topic}: ${memory.content}${issue}${tags} {id=${memory.id} title=${JSON.stringify(memory.title)} scope=${entry.scope}}`
 }
 
-const buildContextPack = (memories: Memory[], options: ContextOptions) => {
-  const query = options.query?.trim()
-  const words = query?.toLowerCase().split(/\s+/).filter(Boolean) || []
-  const minScore = options.minScore ?? (query ? 1 : 0)
-  const maxChars = options.maxChars && options.maxChars > 0 ? Math.floor(options.maxChars) : 1200
-  const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : 5
-  let results = memories
+const scoreMatch = (memory: Memory, words: string[]): number => {
+  const searchable = `${memory.id} ${memory.title} ${memory.type} ${memory.topic} ${memory.content} ${memory.tags?.join(" ") || ""}`.toLowerCase()
+  let score = 0
+  for (const word of words) {
+    if (searchable.includes(word)) score++
+    if (memory.topic.toLowerCase() === word) score += 2
+    if (memory.type === word) score += 2
+    if (memory.tags?.some((tag) => tag.toLowerCase() === word)) score += 2
+  }
+  return score
+}
 
-  if (options.scope) results = results.filter((memory) => matchesScope(memory, options.scope!, "contains"))
-  if (options.types?.length) results = results.filter((memory) => options.types!.includes(memory.type))
-  if (options.tags?.length) {
-    const tags = options.tags.map((tag) => tag.toLowerCase())
-    results = results.filter((memory) => {
-      const memoryTags = memory.tags?.map((tag) => tag.toLowerCase()) || []
+const matchesTopic = (memory: Memory, scope: string, mode: "contains" | "exact" | "prefix") => {
+  if (mode === "exact") return memory.topic === scope
+  if (mode === "prefix") return memory.topic.startsWith(scope)
+  return memory.topic === scope || memory.topic.includes(scope)
+}
+
+const startOfDateFilter = (value: string) => value.includes("T") ? value : `${value}T00:00:00.000Z`
+const endOfDateFilter = (value: string) => value.includes("T") ? value : `${value}T23:59:59.999Z`
+
+const filterEntries = (
+  entries: MemoryEntry[],
+  args: {
+    scope?: string
+    type?: MemoryType
+    query?: string
+    tags?: string[]
+    since?: string
+    until?: string
+    match?: "contains" | "exact" | "prefix"
+  },
+) => {
+  let results = entries
+  const match = args.match || "contains"
+  if (args.scope) results = results.filter((entry) => matchesTopic(entry.memory, args.scope!, match))
+  if (args.type) results = results.filter((entry) => entry.memory.type === args.type)
+  if (args.tags?.length) {
+    const tags = args.tags.map((tag) => tag.toLowerCase())
+    results = results.filter((entry) => {
+      const memoryTags = entry.memory.tags?.map((tag) => tag.toLowerCase()) || []
       return tags.every((tag) => memoryTags.includes(tag))
     })
   }
+  if (args.since) results = results.filter((entry) => entry.memory.createdAt >= startOfDateFilter(args.since!))
+  if (args.until) results = results.filter((entry) => entry.memory.createdAt <= endOfDateFilter(args.until!))
+  if (!args.query) return results
 
-  const ranked = results
-    .map((memory) => ({
-      memory,
-      score: words.length ? scoreMatch(memory, words) : 0,
-    }))
+  const words = args.query.toLowerCase().split(/\s+/).filter(Boolean)
+  return results
+    .map((entry) => ({ entry, score: scoreMatch(entry.memory, words) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.entry.memory.createdAt.localeCompare(a.entry.memory.createdAt))
+    .map((item) => item.entry)
+}
+
+const rankEntries = (entries: MemoryEntry[], options: ContextOptions) => {
+  const query = options.query?.trim()
+  const words = query?.toLowerCase().split(/\s+/).filter(Boolean) || []
+  const minScore = options.minScore ?? (query ? 1 : 0)
+  let results = entries
+  if (options.scope) results = results.filter((entry) => matchesTopic(entry.memory, options.scope!, "contains"))
+  if (options.types?.length) results = results.filter((entry) => options.types!.includes(entry.memory.type))
+  if (options.tags?.length) {
+    const tags = options.tags.map((tag) => tag.toLowerCase())
+    results = results.filter((entry) => {
+      const memoryTags = entry.memory.tags?.map((tag) => tag.toLowerCase()) || []
+      return tags.every((tag) => memoryTags.includes(tag))
+    })
+  }
+  return results
+    .map((entry) => ({ entry, score: words.length ? scoreMatch(entry.memory, words) : 0 }))
     .filter((item) => item.score >= minScore)
     .sort((a, b) => {
-      const priority = typePriority[b.memory.type] - typePriority[a.memory.type]
-      return b.score - a.score || priority || b.memory.ts.localeCompare(a.memory.ts)
+      const priority = typePriority[b.entry.memory.type] - typePriority[a.entry.memory.type]
+      return b.score - a.score || priority || b.entry.memory.createdAt.localeCompare(a.entry.memory.createdAt)
     })
-    .slice(0, limit)
+    .slice(0, options.limit && options.limit > 0 ? Math.floor(options.limit) : 5)
+    .map((item) => item.entry)
+}
 
-  if (!ranked.length) return ""
-
+const buildContextPack = (entries: MemoryEntry[], options: ContextOptions) => {
+  const maxChars = options.maxChars && options.maxChars > 0 ? Math.floor(options.maxChars) : 1200
   const lines = ["Relevant Memory:"]
   let used = lines[0]!.length + 1
-
-  for (const { memory } of ranked) {
-    const prefix = `- ${memory.type}/${memory.scope}: `
+  for (const entry of rankEntries(entries, options)) {
+    const prefix = `- ${entry.memory.type}/${entry.memory.topic}: `
     const remaining = maxChars - used - prefix.length
     if (remaining <= 20) break
-
-    const line = `${prefix}${truncate(memory.content, Math.min(remaining, 260))}`
+    const normalized = entry.memory.content.replace(/\s+/g, " ").trim()
+    const content = normalized.length <= Math.min(remaining, 260)
+      ? normalized
+      : `${normalized.slice(0, Math.max(0, Math.min(remaining, 260) - 3)).trimEnd()}...`
+    const line = `${prefix}${content}`
     lines.push(line)
     used += line.length + 1
   }
+  return lines.length > 1 ? lines.join("\n") : ""
+}
 
+const buildMemoryIndex = (entries: MemoryEntry[], options: ContextOptions) => {
+  const maxChars = options.maxChars && options.maxChars > 0 ? Math.floor(options.maxChars) : 1200
+  const lines = ["Relevant Memory Index:"]
+  let used = lines[0]!.length + 1
+  for (const entry of rankEntries(entries, options)) {
+    const title = entry.memory.title.replace(/\s+/g, " ").trim()
+    const line = `- id=${entry.memory.id} title=${JSON.stringify(title)} type=${entry.memory.type} scope=${entry.scope}`
+    if (used + line.length + 1 > maxChars) break
+    lines.push(line)
+    used += line.length + 1
+  }
   return lines.length > 1 ? lines.join("\n") : ""
 }
 
@@ -269,13 +192,10 @@ const textFromParts = (parts: unknown[]) => parts
   .join("\n")
   .trim()
 
-const inferExplicitMemory = (text: string, defaultScope: string): Omit<Memory, "ts"> | null => {
+const inferExplicitMemory = (text: string, topic: string) => {
   if (/\b(don't|do not|dont)\s+remember\b/i.test(text)) return null
-
-  const match = text.match(/(?:^|\b)(?:please\s+)?remember(?:\s+that|:)?\s+([\s\S]+)$/i)
-  const content = match?.[1]?.trim()
+  const content = text.match(/(?:^|\b)(?:please\s+)?remember(?:\s+that|:)?\s+([\s\S]+)$/i)?.[1]?.trim()
   if (!content) return null
-
   const lower = content.toLowerCase()
   const type: MemoryType = lower.includes("prefer")
     ? "preference"
@@ -286,13 +206,7 @@ const inferExplicitMemory = (text: string, defaultScope: string): Omit<Memory, "
         : lower.includes("pattern") || lower.includes("always")
           ? "pattern"
           : "context"
-
-  return {
-    type,
-    scope: defaultScope,
-    content,
-    tags: ["auto"],
-  }
+  return newMemory({ type, topic, content, tags: ["auto"] })
 }
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> => {
@@ -309,411 +223,314 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-const createStore = (dir: string): MemoryStore => ({
-  dir,
-  async ensureDir() {
-    await mkdir(dir, { recursive: true })
-  },
-  async appendMemory(memory) {
-    await this.ensureDir()
-    await appendFile(join(dir, `${dateFromTs(memory.ts)}.logfmt`), `${encodeMemory(memory)}\n`, "utf8")
-  },
-  async appendDeletion(memory, reason) {
-    await this.ensureDir()
-    await appendFile(join(dir, "deletions.logfmt"), `${encodeDeletion(memory, reason)}\n`, "utf8")
-  },
-  async readEntries() {
-    await this.ensureDir()
-    const glob = new Bun.Glob("*.logfmt")
-    const files = (await Array.fromAsync(glob.scan(dir)))
-      .filter((filename) => filename !== "deletions.logfmt")
-      .sort()
-    const entries: MemoryEntry[] = []
-
-    for (const filename of files) {
-      const filepath = join(dir, filename)
-      const file = Bun.file(filepath)
-      const text = await file.text()
-      const lines = text.split("\n")
-
-      lines.forEach((line, lineIndex) => {
-        const memory = parseLine(line)
-        if (memory) entries.push({ memory, filepath, lineIndex })
-      })
-    }
-
-    return entries.sort((a, b) => a.memory.ts.localeCompare(b.memory.ts))
-  },
-  async readDeletionLines() {
-    const file = Bun.file(join(dir, "deletions.logfmt"))
-    if (!(await file.exists())) return []
-    return (await file.text()).trim().split("\n").filter(Boolean)
-  },
-  async rewriteFile(filepath, lines) {
-    await this.ensureDir()
-    const tmp = `${filepath}.${crypto.randomUUID()}.tmp`
-    await Bun.write(tmp, lines.length ? `${lines.join("\n")}\n` : "")
-    await rename(tmp, filepath)
-  },
-})
-
-const matchesScope = (memory: Memory, scope: string, mode: "contains" | "exact" | "prefix") => {
-  if (mode === "exact") return memory.scope === scope
-  if (mode === "prefix") return memory.scope.startsWith(scope)
-  return memory.scope === scope || memory.scope.includes(scope)
-}
-
-const startOfDateFilter = (value: string) => value.includes("T") ? value : `${value}T00:00:00.000Z`
-
-const endOfDateFilter = (value: string) => value.includes("T") ? value : `${value}T23:59:59.999Z`
-
-const filterMemories = (
-  memories: Memory[],
-  args: {
-    scope?: string
-    type?: MemoryType
-    query?: string
-    tags?: string[]
-    since?: string
-    until?: string
-    match?: "contains" | "exact" | "prefix"
-  },
-) => {
-  let results = memories
-  const match = args.match || "contains"
-
-  if (args.scope) results = results.filter((memory) => matchesScope(memory, args.scope!, match))
-  if (args.type) results = results.filter((memory) => memory.type === args.type)
-  if (args.tags?.length) {
-    const tags = args.tags.map((tag) => tag.toLowerCase())
-    results = results.filter((memory) => {
-      const memoryTags = memory.tags?.map((tag) => tag.toLowerCase()) || []
-      return tags.every((tag) => memoryTags.includes(tag))
-    })
-  }
-  if (args.since) {
-    const since = startOfDateFilter(args.since)
-    results = results.filter((memory) => memory.ts >= since)
-  }
-  if (args.until) {
-    const until = endOfDateFilter(args.until)
-    results = results.filter((memory) => memory.ts <= until)
-  }
-
-  if (!args.query) return results
-
-  const words = args.query.toLowerCase().split(/\s+/).filter(Boolean)
-  return results
-    .map((memory) => ({ memory, score: scoreMatch(memory, words) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.memory.ts.localeCompare(a.memory.ts))
-    .map((item) => item.memory)
-}
-
 const chooseUpdateTarget = (matches: MemoryEntry[], query?: string) => {
   if (matches.length <= 1) return { target: matches[0], message: undefined }
-  if (!query) {
-    return {
-      target: undefined,
-      message: `Found ${matches.length} memories for ${matches[0]!.memory.type}/${matches[0]!.memory.scope}. Provide a query to select which one to update, or use recall to see all matches.`,
-    }
-  }
-
+  if (!query) return { target: undefined, message: `Found ${matches.length} memories. Provide an id or query to select one.` }
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   const scored = matches
-    .map((entry) => ({ ...entry, score: scoreMatch(entry.memory, words) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || b.memory.ts.localeCompare(a.memory.ts))
-
-  if (!scored.length) {
-    return {
-      target: undefined,
-      message: `Found ${matches.length} memories for ${matches[0]!.memory.type}/${matches[0]!.memory.scope}, but none matched query "${query}". Use recall to see all matches.`,
-    }
-  }
-
-  return { target: scored[0], message: undefined }
+    .map((entry) => ({ entry, score: scoreMatch(entry.memory, words) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.entry.memory.updatedAt.localeCompare(a.entry.memory.updatedAt))
+  return scored[0]
+    ? { target: scored[0].entry, message: undefined }
+    : { target: undefined, message: `Found ${matches.length} memories, but none matched query "${query}".` }
 }
 
-const createTools = (store: MemoryStore) => {
+const parseImportedMemory = (value: unknown): { memory: Memory; scope?: StorageScope } | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const input = value as Record<string, unknown>
+  if (!isMemoryType(input.type) || typeof input.content !== "string") return null
+  const timestamp = typeof input.createdAt === "string"
+    ? input.createdAt
+    : typeof input.ts === "string"
+      ? input.ts
+      : new Date().toISOString()
+  const source = [
+    `created_at=${timestamp}`,
+    `updated_at=${typeof input.updatedAt === "string" ? input.updatedAt : timestamp}`,
+    `ts=${typeof input.updatedAt === "string" ? input.updatedAt : timestamp}`,
+    `type=${input.type}`,
+    `scope=${typeof input.topic === "string" ? input.topic : typeof input.scope === "string" && !isStorageScope(input.scope) ? input.scope : "general"}`,
+    `content=${JSON.stringify(input.content)}`,
+    typeof input.id === "string" ? `id=${input.id}` : "",
+    typeof input.title === "string" ? `title=${JSON.stringify(input.title)}` : "",
+  ].filter(Boolean).join(" ")
+  const memory = parseMemoryLine(source)
+  if (!memory) return null
+  memory.issue = typeof input.issue === "string" ? input.issue : undefined
+  memory.tags = Array.isArray(input.tags) ? input.tags.filter((tag): tag is string => typeof tag === "string") : undefined
+  const scope = isStorageScope(input.storageScope) ? input.storageScope : isStorageScope(input.scope) ? input.scope : undefined
+  return { memory, scope }
+}
+
+const createTools = (stores: MemoryStores) => {
   const remember = tool({
-    description: "Store a memory (decision, learning, preference, blocker, context, pattern)",
+    description: "Store a memory while preserving the legacy topic-based call shape",
     args: {
       type: tool.schema.enum(MEMORY_TYPES).describe("Type of memory"),
-      scope: tool.schema.string().describe("Scope/area (e.g., auth, api, mobile)"),
+      scope: tool.schema.string().describe("Legacy topic/area (e.g., auth, api, mobile)"),
       content: tool.schema.string().describe("The memory content"),
+      title: tool.schema.string().optional().describe("Short memory title"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
       issue: tool.schema.string().optional().describe("Related GitHub issue (e.g., #51)"),
       tags: tool.schema.array(tool.schema.string()).optional().describe("Additional tags"),
     },
     async execute(args) {
-      await store.appendMemory({
-        ts: new Date().toISOString(),
-        type: args.type,
-        scope: args.scope.trim(),
-        content: args.content,
-        issue: args.issue?.trim() || undefined,
-        tags: args.tags?.map((tag) => tag.trim()).filter(Boolean),
-      })
+      const scope = args.storageScope || "project"
+      const memory = newMemory({ ...args, topic: args.scope })
+      await stores[scope].appendMemory(memory)
+      return `Remembered ${memory.id}: ${args.type} in ${args.scope} (${scope})`
+    },
+  })
 
-      return `Remembered: ${args.type} in ${args.scope}`
+  const write = tool({
+    description: "Create a titled global or project memory",
+    args: {
+      scope: tool.schema.enum(STORAGE_SCOPES).describe("Storage scope"),
+      title: tool.schema.string().describe("Short memory title"),
+      type: tool.schema.enum(MEMORY_TYPES).describe("Type of memory"),
+      content: tool.schema.string().describe("The full memory content"),
+    },
+    async execute(args) {
+      const memory = newMemory(args)
+      await stores[args.scope].appendMemory(memory)
+      return JSON.stringify(toRecord({ memory, scope: args.scope, filepath: "", lineIndex: 0 }))
+    },
+  })
+
+  const read = tool({
+    description: "Read one full memory body by stable id",
+    args: {
+      id: tool.schema.string().describe("Stable memory id"),
+      scope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope; omit to search both"),
+    },
+    async execute(args) {
+      const matches = (await readEntries(stores, args.scope)).filter((entry) => entry.memory.id === args.id)
+      if (!matches.length) return "No matching memory"
+      if (matches.length > 1) return "Memory id exists in both scopes; provide scope"
+      return JSON.stringify(toRecord(matches[0]!), null, 2)
     },
   })
 
   const recall = tool({
-    description: "Retrieve memories by scope, type, tag, date, or search query",
+    description: "Retrieve full memories by topic, type, tag, date, or search query",
     args: {
-      scope: tool.schema.string().optional().describe("Filter by scope"),
+      scope: tool.schema.string().optional().describe("Legacy topic filter"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
       type: tool.schema.enum(MEMORY_TYPES).optional().describe("Filter by type"),
       query: tool.schema.string().optional().describe("Search term (space-separated words, matches any)"),
       limit: tool.schema.number().optional().describe("Max results (default 20)"),
-      tags: tool.schema.array(tool.schema.string()).optional().describe("Only include memories with all of these tags"),
-      since: tool.schema.string().optional().describe("Only include memories at or after this ISO timestamp/date"),
-      until: tool.schema.string().optional().describe("Only include memories at or before this ISO timestamp/date"),
-      match: tool.schema.enum(["contains", "exact", "prefix"]).optional().describe("Scope match mode (default contains, matching earlier behavior)"),
+      tags: tool.schema.array(tool.schema.string()).optional().describe("Only include memories with all tags"),
+      since: tool.schema.string().optional().describe("Only include memories at or after this timestamp/date"),
+      until: tool.schema.string().optional().describe("Only include memories at or before this timestamp/date"),
+      match: tool.schema.enum(["contains", "exact", "prefix"]).optional().describe("Topic match mode"),
     },
     async execute(args) {
-      const memories = (await store.readEntries()).map((entry) => entry.memory)
-
-      if (!memories.length) return "No memories found"
-
-      const totalCount = memories.length
-      const results = filterMemories(memories, args)
-      const filteredCount = results.length
+      const entries = await readEntries(stores, args.storageScope || "project")
+      if (!entries.length) return "No memories found"
+      const results = filterEntries(entries, args)
       const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 20
       const limited = args.query ? results.slice(0, limit) : results.slice(-limit)
-
       if (!limited.length) return "No matching memories"
-
-      const header = filteredCount > limit
-        ? `Found ${filteredCount} memories (showing ${args.query ? "best" : "last"} ${limit} of ${totalCount} total)\n\n`
-        : filteredCount !== totalCount
-          ? `Found ${filteredCount} memories (${totalCount} total)\n\n`
-          : `Found ${filteredCount} memories\n\n`
-
+      const header = results.length > limit
+        ? `Found ${results.length} memories (showing ${args.query ? "best" : "last"} ${limit} of ${entries.length} total)\n\n`
+        : results.length !== entries.length
+          ? `Found ${results.length} memories (${entries.length} total)\n\n`
+          : `Found ${results.length} memories\n\n`
       return header + limited.map(formatMemory).join("\n")
     },
   })
 
   const update = tool({
-    description: "Update an existing memory by scope and type (finds matching memory and updates its content)",
+    description: "Update an existing project memory by legacy topic/type or stable id",
     args: {
-      scope: tool.schema.string().describe("Scope of memory to update"),
-      type: tool.schema.enum(MEMORY_TYPES).describe("Type of memory"),
-      content: tool.schema.string().describe("The new content for the memory"),
-      query: tool.schema.string().optional().describe("Search term to find specific memory if multiple exist"),
-      issue: tool.schema.string().optional().describe("Update related GitHub issue (e.g., #51)"),
+      scope: tool.schema.string().optional().describe("Legacy topic of memory to update"),
+      type: tool.schema.enum(MEMORY_TYPES).optional().describe("Type of memory"),
+      id: tool.schema.string().optional().describe("Stable memory id"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
+      title: tool.schema.string().optional().describe("New title"),
+      content: tool.schema.string().describe("The new content"),
+      query: tool.schema.string().optional().describe("Search term when multiple legacy matches exist"),
+      issue: tool.schema.string().optional().describe("Update related GitHub issue"),
       tags: tool.schema.array(tool.schema.string()).optional().describe("Update tags"),
     },
     async execute(args) {
-      const matches = (await store.readEntries()).filter((entry) => entry.memory.scope === args.scope && entry.memory.type === args.type)
-
-      if (!matches.length) return `No memories found for ${args.type} in ${args.scope}`
-
-      const { target, message } = chooseUpdateTarget(matches, args.query)
-      if (message) return message
-      if (!target) return `No memories found for ${args.type} in ${args.scope}`
-
-      await store.appendDeletion(target.memory, `Updated to: ${args.content}`)
-
-      const file = Bun.file(target.filepath)
-      const lines = (await file.text()).split("\n")
-      lines[target.lineIndex] = encodeMemory({
-        ts: new Date().toISOString(),
-        type: args.type,
-        scope: args.scope,
-        content: args.content,
-        issue: args.issue !== undefined ? args.issue : target.memory.issue,
-        tags: args.tags !== undefined ? args.tags : target.memory.tags,
-      })
-      await store.rewriteFile(target.filepath, lines.filter((line) => line.length > 0))
-
-      return `Updated ${args.type} in ${args.scope}: "${args.content}"`
+      const storageScope = args.storageScope || "project"
+      let selectionMessage: string | undefined
+      const updated = await updateSelectedEntry(
+        stores[storageScope],
+        (entries) => {
+          const matches = args.id
+            ? entries.filter((entry) => entry.memory.id === args.id)
+            : args.scope && args.type
+              ? entries.filter((entry) => entry.memory.topic === args.scope && entry.memory.type === args.type)
+              : []
+          const selected = chooseUpdateTarget(matches, args.query)
+          selectionMessage = selected.message
+          return selected.target
+        },
+        (memory) => ({
+          ...memory,
+          title: args.title?.trim() || memory.title,
+          content: args.content,
+          updatedAt: new Date().toISOString(),
+          issue: args.issue !== undefined ? args.issue.trim() || undefined : memory.issue,
+          tags: args.tags !== undefined ? args.tags.map((tag) => tag.trim()).filter(Boolean) : memory.tags,
+        }),
+        `Updated to: ${args.content}`,
+      )
+      if (!updated) return selectionMessage || "No matching memories; provide id or both scope and type"
+      return `Updated ${updated.memory.id}: ${updated.memory.title}`
     },
   })
 
   const listMemories = tool({
-    description: "List all unique scopes and types in memory for discovery",
-    args: {},
-    async execute() {
-      const memories = (await store.readEntries()).map((entry) => entry.memory)
-
-      if (!memories.length) return "No memories found"
-
-      const scopes = new Map<string, number>()
-      const types = new Map<string, number>()
-      const scopeTypes = new Map<string, Set<string>>()
-
-      for (const memory of memories) {
-        scopes.set(memory.scope, (scopes.get(memory.scope) || 0) + 1)
-        types.set(memory.type, (types.get(memory.type) || 0) + 1)
-        if (!scopeTypes.has(memory.scope)) scopeTypes.set(memory.scope, new Set())
-        scopeTypes.get(memory.scope)!.add(memory.type)
-      }
-
-      const blockers = memories.filter((memory) => memory.type === "blocker")
-      const lines = [`Total memories: ${memories.length}`, "", "Scopes:"]
-      for (const [scope, count] of [...scopes.entries()].sort((a, b) => b[1] - a[1])) {
-        const typeList = [...scopeTypes.get(scope)!].join(", ")
-        lines.push(`  ${scope}: ${count} (${typeList})`)
-      }
-      lines.push("", "Types:")
-      for (const [type, count] of [...types.entries()].sort((a, b) => b[1] - a[1])) {
-        lines.push(`  ${type}: ${count}`)
-      }
-      if (blockers.length) lines.push("", `Open blockers: ${blockers.length}`)
-
-      return lines.join("\n")
+    description: "List compact memory indexes with stable ids across global and project scopes",
+    args: {
+      scope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Only list one storage scope"),
+    },
+    async execute(args) {
+      const entries = await readEntries(stores, args.scope)
+      if (!entries.length) return "No memories found"
+      return [`Total memories: ${entries.length}`, ...entries.map((entry) =>
+        `${entry.memory.id} | ${entry.memory.title} | ${entry.memory.type} | ${entry.scope}`,
+      )].join("\n")
     },
   })
 
   const forget = tool({
-    description: "Delete memories by scope and type (optionally narrowed by query; logs deletion for audit)",
+    description: "Delete by stable id or legacy topic/type and log the deletion for audit",
     args: {
-      scope: tool.schema.string().describe("Scope of memory to delete"),
-      type: tool.schema.enum(MEMORY_TYPES).describe("Type of memory"),
-      reason: tool.schema.string().describe("Why this is being deleted (for audit purposes)"),
-      query: tool.schema.string().optional().describe("Optional search term to delete only the best matching memory"),
+      id: tool.schema.string().optional().describe("Stable memory id"),
+      scope: tool.schema.string().optional().describe("Legacy topic of memory to delete"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope; id lookups search both when omitted"),
+      type: tool.schema.enum(MEMORY_TYPES).optional().describe("Type of memory"),
+      reason: tool.schema.string().describe("Why this is being deleted"),
+      query: tool.schema.string().optional().describe("Narrow legacy matches to the best result"),
     },
     async execute(args) {
-      const entries = await store.readEntries()
-      let matches = entries.filter((entry) => entry.memory.scope === args.scope && entry.memory.type === args.type)
-
-      if (args.query && matches.length) {
-        const words = args.query.toLowerCase().split(/\s+/).filter(Boolean)
-        const scored = matches
-          .map((entry) => ({ ...entry, score: scoreMatch(entry.memory, words) }))
-          .filter((entry) => entry.score > 0)
-          .sort((a, b) => b.score - a.score || b.memory.ts.localeCompare(a.memory.ts))
-        matches = scored[0] ? [scored[0]] : []
+      const scopes = args.storageScope ? [args.storageScope] : args.id ? STORAGE_SCOPES : ["project" as const]
+      const matches = (await Promise.all(scopes.map((storageScope) => deleteSelectedEntries(
+        stores[storageScope],
+        (entries) => {
+          let selected = args.id
+            ? entries.filter((entry) => entry.memory.id === args.id)
+            : args.scope && args.type
+              ? entries.filter((entry) => entry.memory.topic === args.scope && entry.memory.type === args.type)
+              : []
+          if (args.query && selected.length) {
+            const target = chooseUpdateTarget(selected, args.query).target
+            selected = target ? [target] : []
+          }
+          return selected
+        },
+        args.reason,
+      )))).flat()
+      if (!matches.length) return "No matching memories; provide id or both scope and type"
+      if (!args.id && args.scope && args.type) {
+        return `Deleted ${matches.length} ${args.type} memory(s) from ${args.scope}. Reason: ${args.reason}`
       }
-
-      if (!matches.length) return `No memories found for ${args.type} in ${args.scope}`
-
-      const byFile = new Map<string, Set<number>>()
-      for (const match of matches) {
-        if (!byFile.has(match.filepath)) byFile.set(match.filepath, new Set())
-        byFile.get(match.filepath)!.add(match.lineIndex)
-      }
-
-      for (const [filepath, lineIndexes] of byFile) {
-        const lines = (await Bun.file(filepath).text()).split("\n")
-        const filtered = lines.filter((line, index) => line.length > 0 && !lineIndexes.has(index))
-        await store.rewriteFile(filepath, filtered)
-      }
-      for (const match of matches) await store.appendDeletion(match.memory, args.reason)
-
-      return `Deleted ${matches.length} ${args.type} memory(s) from ${args.scope}. Reason: ${args.reason}\nDeletions logged to ${join(store.dir, "deletions.logfmt")}`
+      return `Deleted ${matches.length} memory(s): ${matches.map((entry) => entry.memory.id).join(", ")}`
     },
   })
 
   const exportMemories = tool({
-    description: "Export memories as jsonl, json, or logfmt",
+    description: "Export project or global memories as jsonl, json, or logfmt",
     args: {
       format: tool.schema.enum(["jsonl", "json", "logfmt"]).optional().describe("Export format (default jsonl)"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
       includeDeletions: tool.schema.boolean().optional().describe("Include deletion audit lines for logfmt exports"),
     },
     async execute(args) {
+      const scope = args.storageScope || "project"
+      const entries = await readEntries(stores, scope)
+      const records = entries.map((entry) => ({
+        ts: entry.memory.updatedAt,
+        type: entry.memory.type,
+        scope: entry.memory.topic,
+        content: entry.memory.content,
+        id: entry.memory.id,
+        title: entry.memory.title,
+        createdAt: entry.memory.createdAt,
+        updatedAt: entry.memory.updatedAt,
+        storageScope: entry.scope,
+        issue: entry.memory.issue,
+        tags: entry.memory.tags,
+      }))
       const format = args.format || "jsonl"
-      const memories = (await store.readEntries()).map((entry) => entry.memory)
-
-      if (format === "json") return JSON.stringify(memories, null, 2)
+      if (format === "json") return JSON.stringify(records, null, 2)
       if (format === "logfmt") {
-        const lines = memories.map(encodeMemory)
-        if (args.includeDeletions) lines.push(...await store.readDeletionLines())
+        const lines = entries.map((entry) => encodeMemory(entry.memory))
+        if (args.includeDeletions) lines.push(...await stores[scope].readDeletionLines())
         return lines.join("\n")
       }
-      return memories.map((memory) => JSON.stringify(memory)).join("\n")
+      return records.map((record) => JSON.stringify(record)).join("\n")
     },
   })
 
   const importMemories = tool({
-    description: "Import memories from jsonl, json, or compatible logfmt",
+    description: "Import memories into project or global storage from jsonl, json, or compatible logfmt",
     args: {
       data: tool.schema.string().describe("Memory data to import"),
       format: tool.schema.enum(["jsonl", "json", "logfmt"]).optional().describe("Import format (default jsonl)"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Destination scope (default project)"),
     },
     async execute(args) {
       const format = args.format || "jsonl"
-      const imported: Memory[] = []
-
-      if (format === "json") {
-        const parsed = JSON.parse(args.data) as Memory[]
-        imported.push(...parsed)
-      } else if (format === "logfmt") {
-        imported.push(...args.data.split("\n").map(parseLine).filter((memory): memory is Memory => memory !== null))
-      } else {
-        imported.push(...args.data.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Memory))
-      }
-
+      const imported: Array<{ memory: Memory; scope?: StorageScope } | null> = format === "logfmt"
+        ? args.data.split("\n").map((line, index) => {
+            const memory = parseMemoryLine(line, `import:${index}:${crypto.randomUUID()}`)
+            return memory ? { memory, scope: undefined } : null
+          })
+        : (format === "json" ? JSON.parse(args.data) as unknown[] : args.data.split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown))
+            .map(parseImportedMemory)
       let count = 0
-      for (const memory of imported) {
-        if (!isMemoryType(memory.type)) continue
-        await store.appendMemory({
-          ts: memory.ts || new Date().toISOString(),
-          type: memory.type,
-          scope: memory.scope,
-          content: memory.content,
-          issue: memory.issue,
-          tags: memory.tags,
-        })
+      for (const item of imported) {
+        if (!item) continue
+        const scope = args.storageScope || item.scope || "project"
+        await stores[scope].appendMemory(item.memory)
         count++
       }
-
       return `Imported ${count} memory(s)`
     },
   })
 
   const compact = tool({
-    description: "Rewrite memory files in chronological order and remove exact duplicate records",
+    description: "Rewrite one scope chronologically and remove exact duplicate records",
     args: {
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
       dryRun: tool.schema.boolean().optional().describe("Report what would change without rewriting files"),
     },
     async execute(args) {
-      const entries = await store.readEntries()
-      const unique = new Map<string, Memory>()
-      for (const entry of entries) {
-        const key = JSON.stringify(entry.memory)
-        if (!unique.has(key)) unique.set(key, entry.memory)
-      }
-
-      const duplicateCount = entries.length - unique.size
-      if (args.dryRun) return `Would compact ${entries.length} memories to ${unique.size} unique memories (${duplicateCount} duplicate(s) removed)`
-
-      const byDate = new Map<string, string[]>()
-      for (const memory of [...unique.values()].sort((a, b) => a.ts.localeCompare(b.ts))) {
-        const date = dateFromTs(memory.ts)
-        if (!byDate.has(date)) byDate.set(date, [])
-        byDate.get(date)!.push(encodeMemory(memory))
-      }
-
-      const files = new Set(entries.map((entry) => entry.filepath))
-      for (const filepath of files) await store.rewriteFile(filepath, [])
-      for (const [date, lines] of byDate) await store.rewriteFile(join(store.dir, `${date}.logfmt`), lines)
-
-      return `Compacted ${entries.length} memories to ${unique.size} unique memories (${duplicateCount} duplicate(s) removed)`
+      const scope = args.storageScope || "project"
+      const result = await compactStore(stores[scope], args.dryRun)
+      if (args.dryRun) return `Would compact ${result.before} memories to ${result.after} unique memories (${result.duplicateCount} duplicate(s) removed)`
+      return `Compacted ${result.before} memories to ${result.after} unique memories (${result.duplicateCount} duplicate(s) removed)`
     },
   })
 
   const context = tool({
-    description: "Build a compact relevant-memory context pack for the current task",
+    description: "Build a compact full-body context pack for an explicit agent request",
     args: {
       query: tool.schema.string().optional().describe("Task text to match against memories"),
-      scope: tool.schema.string().optional().describe("Optional scope filter"),
-      tags: tool.schema.array(tool.schema.string()).optional().describe("Only include memories with all of these tags"),
+      scope: tool.schema.string().optional().describe("Optional legacy topic filter"),
+      storageScope: tool.schema.enum(STORAGE_SCOPES).optional().describe("Storage scope (default project)"),
+      tags: tool.schema.array(tool.schema.string()).optional().describe("Only include memories with all tags"),
       types: tool.schema.array(tool.schema.enum(MEMORY_TYPES)).optional().describe("Only include these memory types"),
       limit: tool.schema.number().optional().describe("Maximum memories to include (default 5)"),
-      maxChars: tool.schema.number().optional().describe("Maximum characters in the context pack (default 1200)"),
-      minScore: tool.schema.number().optional().describe("Minimum query relevance score (default 1 when query is provided)"),
+      maxChars: tool.schema.number().optional().describe("Maximum characters in the context pack"),
+      minScore: tool.schema.number().optional().describe("Minimum query relevance score"),
     },
     async execute(args) {
-      const memories = (await store.readEntries()).map((entry) => entry.memory)
-      const pack = buildContextPack(memories, args)
+      const pack = buildContextPack(await readEntries(stores, args.storageScope || "project"), args)
       return pack || "No relevant memories"
     },
   })
 
   return {
     memory_remember: remember,
+    memory_write: write,
+    memory_read: read,
     memory_recall: recall,
     memory_update: update,
     memory_forget: forget,
@@ -725,52 +542,42 @@ const createTools = (store: MemoryStore) => {
   }
 }
 
-export const MemoryPlugin = (async (ctx, options?: PluginOptions) => {
-  const store = createStore(join(ctx.directory, ".opencode", "memory"))
+export const createMemoryPlugin = (
+  resolveGlobalDirectory: () => string = defaultGlobalMemoryDirectory,
+): Plugin => async (input, rawOptions) => {
+  const options = rawOptions as PluginOptions | undefined
+  const stores = createStores(join(input.directory, ".opencode", "memory"), resolveGlobalDirectory())
   const autoLoad = options?.autoLoad ?? false
   const autoSave = options?.autoSave ?? false
   const autoHookTimeoutMs = options?.autoHookTimeoutMs && options.autoHookTimeoutMs > 0 ? options.autoHookTimeoutMs : 100
   let latestPrompt: string | undefined
 
   return {
-    tool: createTools(store),
-    "chat.message": async (input, output) => {
+    tool: createTools(stores),
+    http: { fetch: createFetchHandler(stores) },
+    "chat.message": async (_input, output) => {
       const text = textFromParts(output.parts)
       if (!text) return
-
       latestPrompt = text
-
       if (!autoSave) return
-
       await withTimeout((async () => {
         const memory = inferExplicitMemory(text, options?.autoSaveScope || "user")
-        if (!memory) return
-
-        await store.appendMemory({
-          ...memory,
-          ts: new Date().toISOString(),
-        })
+        if (memory) await stores.project.appendMemory(memory)
       })(), autoHookTimeoutMs)
     },
     "experimental.chat.system.transform": async (_input, output) => {
-      if (!autoLoad) return
-
-      if (!latestPrompt) return
-
-      const pack = await withTimeout((async () => {
-        const memories = (await store.readEntries()).map((entry) => entry.memory)
-        return buildContextPack(memories, {
-          query: latestPrompt,
-          limit: options?.contextLimit,
-          maxChars: options?.contextMaxChars,
-          minScore: options?.contextMinScore,
-        })
-      })(), autoHookTimeoutMs)
-      if (!pack) return
-
-      output.system.push(`${pack}\n\nUse these memories only when they are relevant. Do not mention this block unless asked.`)
+      if (!autoLoad || !latestPrompt) return
+      const pack = await withTimeout((async () => buildMemoryIndex(await readEntries(stores), {
+        query: latestPrompt,
+        limit: options?.contextLimit,
+        maxChars: options?.contextMaxChars,
+        minScore: options?.contextMinScore,
+      }))(), autoHookTimeoutMs)
+      if (pack) output.system.push(`${pack}\n\nUse memory_read to retrieve a full body. Do not mention this block unless asked.`)
     },
   }
-}) satisfies Plugin
+}
+
+export const MemoryPlugin = createMemoryPlugin()
 
 export default MemoryPlugin
