@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare scratch outside the checkout
+        run: |
+          scratch="$RUNNER_TEMP/simple-memory"
+          mkdir -p "$scratch"/{tmp,cache,bun}
+          {
+            echo "TMPDIR=$scratch/tmp"
+            echo "TMP=$scratch/tmp"
+            echo "TEMP=$scratch/tmp"
+            echo "XDG_CACHE_HOME=$scratch/cache"
+            echo "BUN_INSTALL_CACHE_DIR=$scratch/bun"
+          } >> "$GITHUB_ENV"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bun run typecheck
