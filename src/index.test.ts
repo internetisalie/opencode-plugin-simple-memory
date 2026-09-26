@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { createMemoryPlugin } from "../index"
-import serverPlugin from "../server"
+import serverPlugin from "../v1-server"
 
 const tempRoot = join(import.meta.dir, "..", ".tmp-tests")
 let testDir = ""

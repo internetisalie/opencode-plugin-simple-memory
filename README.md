@@ -13,28 +13,26 @@ This package is published through GitHub Packages. Configure the `@internetisali
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
-The plugin targets the custom OpenCode host version `1.18.31-internetisalie.2` exactly. That build advertises `1.18.31` as its package compatibility version, which is the value declared in `engines.opencode`.
-
-Custom OpenCode V1 hosts load the root entrypoint:
+The root package targets OpenCode v2.0.18. Configure it with the v2 `plugins` field:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@internetisalie/opencode-plugin-simple-memory"]
+  "plugins": ["@internetisalie/opencode-plugin-simple-memory"]
 }
 ```
 
-The module has the stable ID `opencode-simple-memory`. The legacy callable plugin remains available only for direct imports by code that invokes the older function interface:
+The module retains the stable ID `opencode-simple-memory`. OpenCode v1 hosts can load the `/v1/server` subpath. The older callable plugin remains available for direct imports:
 
 ```ts
 import MemoryPlugin from "@internetisalie/opencode-plugin-simple-memory/legacy"
 ```
 
-Do not put the `/legacy` subpath in OpenCode's plugin configuration; the custom host requires the root V1 module export.
+The root package entry point now uses the v2 `{ id, setup }` contract. Use `/v1/server` only with the custom v1 host.
 
 ## Storage
 
-- Project memories: `<input.directory>/.opencode/memory/*.logfmt`
+- Project memories: `<ctx.location.directory>/.opencode/memory/*.logfmt`
 - Global memories: `~/.config/opencode/simple-memory/*.logfmt`
 
 Project storage is always derived from the directory captured when the plugin instance starts. Neither the HTTP API nor a tool accepts a project filesystem path.
@@ -94,7 +92,7 @@ Memory types are `decision`, `learning`, `preference`, `blocker`, `context`, and
 
 ## HTTP API
 
-The custom OpenCode host authenticates and strips the plugin route prefix before calling `http.fetch`. The handler still validates every method, path, query, ID, and body itself. All responses are JSON with `content-type: application/json`.
+On a v2 host with plugin HTTP routing, the host authenticates and strips `/api/plugins/opencode-simple-memory` before calling the plugin handler. The handler still validates every method, path, query, ID, and body itself. Stock v2 hosts without plugin HTTP routing can run the tools, but do not expose this API. All responses are JSON with `content-type: application/json`.
 
 ### List And Search
 
@@ -129,15 +127,15 @@ Unknown routes return `404`; unsupported methods on known routes return `405` wi
 
 ## Automatic Context
 
-Automatic loading and saving are disabled by default. Enable them with the existing tuple configuration:
+Automatic loading and saving are disabled by default. Enable them with a v2 plugin options entry:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "@internetisalie/opencode-plugin-simple-memory",
-      {
+  "plugins": [
+    {
+      "package": "@internetisalie/opencode-plugin-simple-memory",
+      "options": {
         "autoLoad": true,
         "autoSave": true,
         "autoHookTimeoutMs": 100,
@@ -146,7 +144,7 @@ Automatic loading and saving are disabled by default. Enable them with the exist
         "contextMinScore": 1,
         "autoSaveScope": "user"
       }
-    ]
+    }
   ]
 }
 ```
