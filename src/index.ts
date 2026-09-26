@@ -29,7 +29,7 @@ import {
 export type { MemoryRecord, MemoryType, StorageScope } from "./memory"
 export { MEMORY_TYPES, STORAGE_SCOPES, parseMemoryLine } from "./memory"
 
-interface PluginOptions {
+export interface PluginOptions {
   autoLoad?: boolean
   autoSave?: boolean
   autoHookTimeoutMs?: number
@@ -167,7 +167,7 @@ const buildContextPack = (entries: MemoryEntry[], options: ContextOptions) => {
   return lines.length > 1 ? lines.join("\n") : ""
 }
 
-const buildMemoryIndex = (entries: MemoryEntry[], options: ContextOptions) => {
+export const buildMemoryIndex = (entries: MemoryEntry[], options: ContextOptions) => {
   const maxChars = options.maxChars && options.maxChars > 0 ? Math.floor(options.maxChars) : 1200
   const lines = ["Relevant Memory Index:"]
   let used = lines[0]!.length + 1
@@ -192,7 +192,7 @@ const textFromParts = (parts: unknown[]) => parts
   .join("\n")
   .trim()
 
-const inferExplicitMemory = (text: string, topic: string) => {
+export const inferExplicitMemory = (text: string, topic: string) => {
   if (/\b(don't|do not|dont)\s+remember\b/i.test(text)) return null
   const content = text.match(/(?:^|\b)(?:please\s+)?remember(?:\s+that|:)?\s+([\s\S]+)$/i)?.[1]?.trim()
   if (!content) return null
@@ -209,7 +209,7 @@ const inferExplicitMemory = (text: string, topic: string) => {
   return newMemory({ type, topic, content, tags: ["auto"] })
 }
 
-const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> => {
+export const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> => {
   let timeout: Timer | undefined
   try {
     return await Promise.race([
@@ -263,7 +263,7 @@ const parseImportedMemory = (value: unknown): { memory: Memory; scope?: StorageS
   return { memory, scope }
 }
 
-const createTools = (stores: MemoryStores) => {
+export const createTools = (stores: MemoryStores) => {
   const remember = tool({
     description: "Store a memory while preserving the legacy topic-based call shape",
     args: {

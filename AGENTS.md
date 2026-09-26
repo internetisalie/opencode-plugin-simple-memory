@@ -2,9 +2,8 @@
 
 ## Commands
 - **Install**: `bun install`
-- **Type check**: `bun run tsc --noEmit`
-- **Run**: `bun run index.ts`
-- **Test manually**: `bun -e "import { MemoryPlugin } from './index.ts'; ..."`
+- **Type check**: `bun run typecheck`
+- **Tests**: `bun test`
 
 ## Code Style
 - **Runtime**: Bun (use Bun APIs: `Bun.file()`, `Bun.write()`, `Bun.Glob`, `Bun.$`)
@@ -14,6 +13,7 @@
 - **Exports**: Re-export public API from `index.ts`, implementation in `src/`
 
 ## Plugin Structure
-- Tools use `@opencode-ai/plugin` `tool()` helper with Zod-like schema (`tool.schema`)
-- Plugin exports async function returning `{ tool: { ... } }`
-- Memories stored in `.opencode/memory/` as logfmt files
+- The root `server.ts` exports the OpenCode v2 `{ id, setup }` module.
+- `v1-server.ts` retains the OpenCode v1 `{ id, server }` module for older hosts.
+- V2 registers tools through `ctx.tool.transform` and auto behavior through session hooks.
+- The shared memory store remains `.opencode/memory/` in logfmt format.
