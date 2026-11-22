@@ -200,7 +200,9 @@ release tag publishes the image only. Tags ending `-internetisalie.0` still publ
 - A pull request builds the image (OCI output) and publishes nothing.
 - Pushing a tag of the form `vMAJOR.MINOR.PATCH-internetisalie.N` publishes
   `ghcr.io/internetisalie/opencode-plugin-simple-memory:<tag>` for linux/amd64. `N` is a positive
-  integer with no leading zero; any other tag is refused. No moving or sha tags are published.
+  integer with no leading zero. A tag matching `v*-internetisalie.*` but not this grammar is
+  refused; other tags do not start this workflow (a plain `v*` tag starts the npm publisher).
+  No moving or sha tags are published.
 - The release version follows the fork-release grammar, not the package metadata: `package.json`
   versions are not changed to drive an image release.
 - The image `org.opencontainers.image.version` label is the tag without its leading `v`
