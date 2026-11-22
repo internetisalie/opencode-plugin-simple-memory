@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '!v*-internetisalie.[1-9]*'
   release:
     types: [published]
 

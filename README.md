@@ -189,3 +189,29 @@ bun run typecheck
 ```
 
 There is no separate build step; the package publishes its TypeScript entrypoints directly.
+
+## Payload Image Release
+
+The `payload-image` workflow publishes the bundled plugin as a `FROM scratch` image holding
+`server.js` and `package.json` at the image root. It is independent of the npm publish workflow:
+that workflow's tag trigger excludes tags ending `-internetisalie.<N>` with `N` starting 1-9, so a
+release tag publishes the image only. Tags ending `-internetisalie.0` still publish to npm.
+
+- A pull request builds the image (OCI output) and publishes nothing.
+- Pushing a tag of the form `vMAJOR.MINOR.PATCH-internetisalie.N` publishes
+  `ghcr.io/internetisalie/opencode-plugin-simple-memory:<tag>` for linux/amd64. `N` is a positive
+  integer with no leading zero. A tag matching `v*-internetisalie.*` but not this grammar is
+  refused; other tags do not start this workflow (a plain `v*` tag starts the npm publisher).
+  No moving or sha tags are published.
+- The release version follows the fork-release grammar, not the package metadata: `package.json`
+  versions are not changed to drive an image release.
+- The image `org.opencontainers.image.version` label is the tag without its leading `v`
+  (`2.0.0-internetisalie.1`); the registry tag keeps the `v`.
+- A published tag is never replaced. The workflow refuses a tag whose image already exists, so a new
+  release takes the next unused fork suffix (`.1`, `.2`, ...) on the same upstream version.
+- The first release is `v2.0.0-internetisalie.1`.
+
+```bash
+git tag v2.0.0-internetisalie.1
+git push origin v2.0.0-internetisalie.1
+```

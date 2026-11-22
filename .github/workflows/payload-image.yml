@@ -1,0 +1,127 @@
+name: Payload image
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*-internetisalie.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: Bundle the payload
+        run: |
+          context="$RUNNER_TEMP/payload"
+          mkdir -p "$context"
+          bun build server.ts --target=bun --format=esm --outfile="$context/server.js"
+          printf '%s' '{"type":"module","main":"server.js"}' > "$context/package.json"
+          echo "PAYLOAD_CONTEXT=$context" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build the payload image
+        run: |
+          umask 022
+          docker buildx build \
+            --platform=linux/amd64 \
+            --provenance=false \
+            -f Containerfile.payload \
+            --build-arg "SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "REVISION=${GITHUB_SHA}" \
+            --build-arg "VERSION=pull-request" \
+            --build-arg "TITLE=opencode-plugin-simple-memory" \
+            --output "type=oci,dest=$RUNNER_TEMP/payload.oci.tar" \
+            "$PAYLOAD_CONTEXT"
+
+  publish-image:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: payload-image-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Refuse a tag outside the release grammar
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-internetisalie\.[1-9][0-9]*$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not a release tag (vMAJOR.MINOR.PATCH-internetisalie.N)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+
+      - run: bun install --frozen-lockfile
+
+      - name: Bundle the payload
+        run: |
+          context="$RUNNER_TEMP/payload"
+          mkdir -p "$context"
+          bun build server.ts --target=bun --format=esm --outfile="$context/server.js"
+          printf '%s' '{"type":"module","main":"server.js"}' > "$context/package.json"
+          echo "PAYLOAD_CONTEXT=$context" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse a re-push of a release tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-internetisalie\.[1-9][0-9]*$ ]]; then
+            echo "$GITHUB_REF_NAME is not a release tag; nothing to check"
+            exit 0
+          fi
+          image="ghcr.io/internetisalie/opencode-plugin-simple-memory:$GITHUB_REF_NAME"
+          set +e
+          err=$(docker buildx imagetools inspect "$image" 2>&1 >/dev/null)
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            echo "::error::$image is already published; publish a new release version"
+            exit 1
+          fi
+          not_found='^ERROR: [^[:space:]]+: not found$'
+          if [[ "$err" =~ $not_found ]]; then
+            echo "$image is not published; continuing"
+            exit 0
+          fi
+          echo "$err" >&2
+          exit 1
+
+      - name: Publish the payload image
+        run: |
+          umask 022
+          docker buildx build \
+            --platform=linux/amd64 \
+            --provenance=false \
+            -f Containerfile.payload \
+            --push \
+            -t "ghcr.io/internetisalie/opencode-plugin-simple-memory:$GITHUB_REF_NAME" \
+            --build-arg "SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "REVISION=${GITHUB_SHA}" \
+            --build-arg "VERSION=${GITHUB_REF_NAME#v}" \
+            --build-arg "TITLE=opencode-plugin-simple-memory" \
+            "$PAYLOAD_CONTEXT"
