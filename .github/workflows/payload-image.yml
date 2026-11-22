@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
@@ -60,9 +60,9 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.3
 
@@ -122,6 +122,6 @@ jobs:
             -t "ghcr.io/internetisalie/opencode-plugin-simple-memory:$GITHUB_REF_NAME" \
             --build-arg "SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
             --build-arg "REVISION=${GITHUB_SHA}" \
-            --build-arg "VERSION=${GITHUB_REF_NAME}" \
+            --build-arg "VERSION=${GITHUB_REF_NAME#v}" \
             --build-arg "TITLE=opencode-plugin-simple-memory" \
             "$PAYLOAD_CONTEXT"

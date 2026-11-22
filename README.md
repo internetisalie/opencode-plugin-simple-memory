@@ -193,7 +193,9 @@ There is no separate build step; the package publishes its TypeScript entrypoint
 ## Payload Image Release
 
 The `payload-image` workflow publishes the bundled plugin as a `FROM scratch` image holding
-`server.js` and `package.json` at the image root. It is independent of the npm publish workflows.
+`server.js` and `package.json` at the image root. It is independent of the npm publish workflow:
+that workflow's tag trigger excludes tags ending `-internetisalie.<N>` with `N` starting 1-9, so a
+release tag publishes the image only. Tags ending `-internetisalie.0` still publish to npm.
 
 - A pull request builds the image (OCI output) and publishes nothing.
 - Pushing a tag of the form `vMAJOR.MINOR.PATCH-internetisalie.N` publishes
@@ -201,6 +203,8 @@ The `payload-image` workflow publishes the bundled plugin as a `FROM scratch` im
   integer with no leading zero; any other tag is refused. No moving or sha tags are published.
 - The release version follows the fork-release grammar, not the package metadata: `package.json`
   versions are not changed to drive an image release.
+- The image `org.opencontainers.image.version` label is the tag without its leading `v`
+  (`2.0.0-internetisalie.1`); the registry tag keeps the `v`.
 - A published tag is never replaced. The workflow refuses a tag whose image already exists, so a new
   release takes the next unused fork suffix (`.1`, `.2`, ...) on the same upstream version.
 - The first release is `v2.0.0-internetisalie.1`.
